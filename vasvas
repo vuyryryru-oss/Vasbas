@@ -1,0 +1,537 @@
+--[[
+    vassyl | Rockin' Stride  (v2)
+    Target: Delta Executor Mobile & Roblox Evade
+    Fitur: Play/Stop, Loop, Auto-stop saat jalan, Speed, Drag (touch), Minimize, Close
+]]--
+
+local Players          = game:GetService("Players")
+local UserInputService = game:GetService("UserInputService")
+local TweenService     = game:GetService("TweenService")
+local RunService       = game:GetService("RunService")
+
+local player = Players.LocalPlayer
+
+-- ==========================================
+-- CONFIG
+-- ==========================================
+local CONFIG = {
+    GuiName   = "VassylEmoteGUI",
+    Title     = "vassyl",
+    Subtitle  = "Rockin' Stride",
+    AnimId    = "rbxassetid://12686575749",
+    Priority  = Enum.AnimationPriority.Action4,
+    FadeTime  = 0.15,
+    SpeedMin  = 0.25,
+    SpeedMax  = 3,
+    SpeedStep = 0.25,
+}
+
+local THEME = {
+    Bg        = Color3.fromRGB(18, 18, 24),
+    Header    = Color3.fromRGB(26, 26, 36),
+    Element   = Color3.fromRGB(36, 36, 50),
+    Accent    = Color3.fromRGB(124, 92, 255),
+    AccentAlt = Color3.fromRGB(78, 140, 255),
+    Danger    = Color3.fromRGB(220, 70, 80),
+    Success   = Color3.fromRGB(80, 220, 140),
+    Text      = Color3.fromRGB(240, 240, 250),
+    SubText   = Color3.fromRGB(150, 150, 170),
+}
+
+-- ==========================================
+-- PARENT & CLEANUP GUI LAMA
+-- ==========================================
+local function getGuiParent()
+    local ok, ui = pcall(function()
+        return gethui and gethui()
+    end)
+    if ok and ui then return ui end
+    return player:WaitForChild("PlayerGui")
+end
+
+local guiParent = getGuiParent()
+
+for _, container in ipairs({ guiParent, player:FindFirstChild("PlayerGui") }) do
+    local old = container and container:FindFirstChild(CONFIG.GuiName)
+    if old then old:Destroy() end
+end
+
+-- ==========================================
+-- STATE
+-- ==========================================
+local state = {
+    looped    = true,
+    autoStop  = true,
+    speed     = 1,
+    minimized = false,
+}
+
+local currentTrack = nil
+local startedAt    = 0
+local conns        = {}
+local ui           = {}   -- referensi elemen GUI
+
+local function connect(signal, fn)
+    local c = signal:Connect(fn)
+    table.insert(conns, c)
+    return c
+end
+
+-- ==========================================
+-- LOGIKA EMOTE
+-- ==========================================
+local function getHumanoid()
+    local char = player.Character
+    return char and char:FindFirstChildOfClass("Humanoid")
+end
+
+local function getAnimator()
+    local hum = getHumanoid()
+    if not hum then return nil end
+    local animator = hum:FindFirstChildOfClass("Animator")
+    if not animator then
+        animator = hum:WaitForChild("Animator", 3)
+    end
+    return animator
+end
+
+local function setStatus(text, color)
+    if ui.statusText then
+        ui.statusText.Text = text
+        ui.statusDot.BackgroundColor3 = color
+    end
+end
+
+local function refreshPlayButton()
+    if not ui.playBtn then return end
+    local playing = currentTrack ~= nil
+    ui.playBtn.Text = playing and "STOP" or "PLAY"
+    ui.playGradient.Color = playing
+        and ColorSequence.new(THEME.Danger, Color3.fromRGB(170, 40, 70))
+        or  ColorSequence.new(THEME.Accent, THEME.AccentAlt)
+    if playing then
+        setStatus("Playing", THEME.Success)
+    else
+        setStatus("Idle", THEME.SubText)
+    end
+end
+
+local function stopEmote()
+    if currentTrack then
+        local t = currentTrack
+        currentTrack = nil
+        pcall(function() t:Stop(CONFIG.FadeTime) end)
+    end
+    refreshPlayButton()
+end
+
+local function playEmote()
+    local animator = getAnimator()
+    if not animator then
+        setStatus("Animator tidak ada", THEME.Danger)
+        return
+    end
+
+    stopEmote()
+
+    local anim = Instance.new("Animation")
+    anim.AnimationId = CONFIG.AnimId
+
+    local ok, track = pcall(function()
+        return animator:LoadAnimation(anim)
+    end)
+
+    if not (ok and track) then
+        setStatus("Gagal load animasi", THEME.Danger)
+        return
+    end
+
+    track.Priority = CONFIG.Priority
+    track.Looped   = state.looped
+    currentTrack   = track
+    startedAt      = os.clock()
+    track:Play(CONFIG.FadeTime)
+    track:AdjustSpeed(state.speed)
+
+    track.Stopped:Connect(function()
+        if currentTrack == track then
+            currentTrack = nil
+            refreshPlayButton()
+        end
+    end)
+
+    refreshPlayButton()
+end
+
+-- ==========================================
+-- GUI HELPERS
+-- ==========================================
+local function make(class, props, parent)
+    local inst = Instance.new(class)
+    for k, v in pairs(props) do inst[k] = v end
+    if parent then inst.Parent = parent end
+    return inst
+end
+
+local function corner(parent, radius)
+    return make("UICorner", { CornerRadius = UDim.new(0, radius) }, parent)
+end
+
+local function tween(inst, info, goal)
+    TweenService:Create(inst, TweenInfo.new(info, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), goal):Play()
+end
+
+local function styledButton(props, parent)
+    local btn = make("TextButton", {
+        BackgroundColor3 = THEME.Element,
+        TextColor3       = THEME.Text,
+        Font             = Enum.Font.GothamMedium,
+        TextSize         = 13,
+        AutoButtonColor  = false,
+        BorderSizePixel  = 0,
+    }, parent)
+    for k, v in pairs(props) do btn[k] = v end
+    corner(btn, 8)
+
+    -- efek tekan (mobile friendly)
+    connect(btn.MouseButton1Down, function()
+        tween(btn, 0.08, { BackgroundTransparency = 0.25 })
+    end)
+    connect(btn.MouseButton1Up, function()
+        tween(btn, 0.12, { BackgroundTransparency = 0 })
+    end)
+    connect(btn.MouseLeave, function()
+        tween(btn, 0.12, { BackgroundTransparency = 0 })
+    end)
+    return btn
+end
+
+-- ==========================================
+-- BANGUN GUI
+-- ==========================================
+local FULL_SIZE = UDim2.new(0, 230, 0, 210)
+local MINI_SIZE = UDim2.new(0, 230, 0, 40)
+
+local screenGui = make("ScreenGui", {
+    Name           = CONFIG.GuiName,
+    ResetOnSpawn   = false,
+    ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
+    DisplayOrder   = 999,
+}, guiParent)
+
+local main = make("Frame", {
+    Name             = "Main",
+    Size             = FULL_SIZE,
+    Position         = UDim2.new(0.05, 0, 0.3, 0),
+    BackgroundColor3 = THEME.Bg,
+    BorderSizePixel  = 0,
+    ClipsDescendants = true,
+}, screenGui)
+corner(main, 12)
+make("UIStroke", {
+    Color        = THEME.Accent,
+    Thickness    = 1.5,
+    Transparency = 0.35,
+}, main)
+
+-- Header
+local header = make("Frame", {
+    Name             = "Header",
+    Size             = UDim2.new(1, 0, 0, 40),
+    BackgroundColor3 = THEME.Header,
+    BorderSizePixel  = 0,
+}, main)
+
+make("UIGradient", {
+    Color = ColorSequence.new(THEME.Header, Color3.fromRGB(34, 28, 56)),
+    Rotation = 0,
+}, header)
+
+make("TextLabel", {
+    Size                   = UDim2.new(0, 100, 0, 20),
+    Position               = UDim2.new(0, 12, 0, 4),
+    BackgroundTransparency = 1,
+    Text                   = CONFIG.Title,
+    TextColor3             = THEME.Text,
+    Font                   = Enum.Font.GothamBold,
+    TextSize               = 15,
+    TextXAlignment         = Enum.TextXAlignment.Left,
+}, header)
+
+make("TextLabel", {
+    Size                   = UDim2.new(0, 120, 0, 14),
+    Position               = UDim2.new(0, 12, 0, 22),
+    BackgroundTransparency = 1,
+    Text                   = CONFIG.Subtitle,
+    TextColor3             = THEME.SubText,
+    Font                   = Enum.Font.Gotham,
+    TextSize               = 11,
+    TextXAlignment         = Enum.TextXAlignment.Left,
+}, header)
+
+local minBtn = styledButton({
+    Size             = UDim2.new(0, 26, 0, 26),
+    Position         = UDim2.new(1, -62, 0, 7),
+    Text             = "-",
+    TextSize         = 16,
+    BackgroundColor3 = THEME.Element,
+}, header)
+
+local closeBtn = styledButton({
+    Size             = UDim2.new(0, 26, 0, 26),
+    Position         = UDim2.new(1, -32, 0, 7),
+    Text             = "X",
+    TextSize         = 12,
+    BackgroundColor3 = THEME.Danger,
+}, header)
+
+-- Body
+local body = make("Frame", {
+    Name                   = "Body",
+    Size                   = UDim2.new(1, 0, 1, -40),
+    Position               = UDim2.new(0, 0, 0, 40),
+    BackgroundTransparency = 1,
+}, main)
+
+make("UIPadding", {
+    PaddingTop    = UDim.new(0, 10),
+    PaddingBottom = UDim.new(0, 10),
+    PaddingLeft   = UDim.new(0, 10),
+    PaddingRight  = UDim.new(0, 10),
+}, body)
+
+make("UIListLayout", {
+    Padding   = UDim.new(0, 8),
+    SortOrder = Enum.SortOrder.LayoutOrder,
+}, body)
+
+-- Status row
+local statusRow = make("Frame", {
+    Size                   = UDim2.new(1, 0, 0, 22),
+    BackgroundTransparency = 1,
+    LayoutOrder            = 1,
+}, body)
+
+ui.statusDot = make("Frame", {
+    Size             = UDim2.new(0, 10, 0, 10),
+    Position         = UDim2.new(0, 2, 0.5, -5),
+    BackgroundColor3 = THEME.SubText,
+    BorderSizePixel  = 0,
+}, statusRow)
+corner(ui.statusDot, 5)
+
+ui.statusText = make("TextLabel", {
+    Size                   = UDim2.new(1, -22, 1, 0),
+    Position               = UDim2.new(0, 20, 0, 0),
+    BackgroundTransparency = 1,
+    Text                   = "Idle",
+    TextColor3             = THEME.SubText,
+    Font                   = Enum.Font.Gotham,
+    TextSize               = 12,
+    TextXAlignment         = Enum.TextXAlignment.Left,
+}, statusRow)
+
+-- Tombol Play / Stop
+ui.playBtn = styledButton({
+    Size             = UDim2.new(1, 0, 0, 40),
+    Text             = "PLAY",
+    Font             = Enum.Font.GothamBold,
+    TextSize         = 15,
+    BackgroundColor3 = Color3.fromRGB(255, 255, 255),
+    LayoutOrder      = 2,
+}, body)
+ui.playGradient = make("UIGradient", {
+    Color    = ColorSequence.new(THEME.Accent, THEME.AccentAlt),
+    Rotation = 20,
+}, ui.playBtn)
+
+-- Baris toggle
+local toggleRow = make("Frame", {
+    Size                   = UDim2.new(1, 0, 0, 32),
+    BackgroundTransparency = 1,
+    LayoutOrder            = 3,
+}, body)
+make("UIListLayout", {
+    FillDirection = Enum.FillDirection.Horizontal,
+    Padding       = UDim.new(0, 8),
+}, toggleRow)
+
+local function makeToggle(label, key, onChange)
+    local btn = styledButton({
+        Size = UDim2.new(0.5, -4, 1, 0),
+        Text = "",
+    }, toggleRow)
+
+    local lbl = make("TextLabel", {
+        Size                   = UDim2.new(1, -36, 1, 0),
+        Position               = UDim2.new(0, 8, 0, 0),
+        BackgroundTransparency = 1,
+        Text                   = label,
+        TextColor3             = THEME.Text,
+        Font                   = Enum.Font.GothamMedium,
+        TextSize               = 11,
+        TextXAlignment         = Enum.TextXAlignment.Left,
+    }, btn)
+
+    local pill = make("Frame", {
+        Size             = UDim2.new(0, 24, 0, 12),
+        Position         = UDim2.new(1, -30, 0.5, -6),
+        BackgroundColor3 = THEME.SubText,
+        BorderSizePixel  = 0,
+    }, btn)
+    corner(pill, 6)
+
+    local knob = make("Frame", {
+        Size             = UDim2.new(0, 8, 0, 8),
+        Position         = UDim2.new(0, 2, 0.5, -4),
+        BackgroundColor3 = THEME.Text,
+        BorderSizePixel  = 0,
+    }, pill)
+    corner(knob, 4)
+
+    local function render()
+        local on = state[key]
+        tween(pill, 0.15, { BackgroundColor3 = on and THEME.Accent or THEME.SubText })
+        tween(knob, 0.15, { Position = on and UDim2.new(1, -10, 0.5, -4) or UDim2.new(0, 2, 0.5, -4) })
+    end
+    render()
+
+    connect(btn.MouseButton1Click, function()
+        state[key] = not state[key]
+        render()
+        if onChange then onChange(state[key]) end
+    end)
+end
+
+makeToggle("Loop", "looped", function(on)
+    if currentTrack then currentTrack.Looped = on end
+end)
+makeToggle("Auto-stop", "autoStop")
+
+-- Baris speed
+local speedRow = make("Frame", {
+    Size                   = UDim2.new(1, 0, 0, 32),
+    BackgroundTransparency = 1,
+    LayoutOrder            = 4,
+}, body)
+
+make("TextLabel", {
+    Size                   = UDim2.new(0.4, 0, 1, 0),
+    BackgroundTransparency = 1,
+    Text                   = "Speed",
+    TextColor3             = THEME.SubText,
+    Font                   = Enum.Font.GothamMedium,
+    TextSize               = 12,
+    TextXAlignment         = Enum.TextXAlignment.Left,
+}, speedRow)
+
+local speedMinus = styledButton({
+    Size     = UDim2.new(0, 32, 1, 0),
+    Position = UDim2.new(1, -108, 0, 0),
+    Text     = "-",
+    TextSize = 16,
+}, speedRow)
+
+local speedValue = make("TextLabel", {
+    Size                   = UDim2.new(0, 40, 1, 0),
+    Position               = UDim2.new(1, -72, 0, 0),
+    BackgroundTransparency = 1,
+    Text                   = "1.00x",
+    TextColor3             = THEME.Text,
+    Font                   = Enum.Font.GothamBold,
+    TextSize               = 12,
+}, speedRow)
+
+local speedPlus = styledButton({
+    Size     = UDim2.new(0, 32, 1, 0),
+    Position = UDim2.new(1, -32, 0, 0),
+    Text     = "+",
+    TextSize = 16,
+}, speedRow)
+
+local function setSpeed(value)
+    state.speed = math.clamp(value, CONFIG.SpeedMin, CONFIG.SpeedMax)
+    speedValue.Text = string.format("%.2fx", state.speed)
+    if currentTrack then currentTrack:AdjustSpeed(state.speed) end
+end
+
+connect(speedMinus.MouseButton1Click, function() setSpeed(state.speed - CONFIG.SpeedStep) end)
+connect(speedPlus.MouseButton1Click,  function() setSpeed(state.speed + CONFIG.SpeedStep) end)
+
+-- ==========================================
+-- INTERAKSI UTAMA
+-- ==========================================
+connect(ui.playBtn.MouseButton1Click, function()
+    if currentTrack then stopEmote() else playEmote() end
+end)
+
+connect(minBtn.MouseButton1Click, function()
+    state.minimized = not state.minimized
+    minBtn.Text = state.minimized and "+" or "-"
+    tween(main, 0.2, { Size = state.minimized and MINI_SIZE or FULL_SIZE })
+end)
+
+local function cleanup()
+    stopEmote()
+    for _, c in ipairs(conns) do
+        pcall(function() c:Disconnect() end)
+    end
+    table.clear(conns)
+    screenGui:Destroy()
+end
+connect(closeBtn.MouseButton1Click, cleanup)
+
+-- Drag (mendukung touch & mouse)
+do
+    local dragging, dragStart, startPos = false, nil, nil
+
+    connect(header.InputBegan, function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1
+            or input.UserInputType == Enum.UserInputType.Touch then
+            dragging  = true
+            dragStart = input.Position
+            startPos  = main.Position
+            local c
+            c = input.Changed:Connect(function()
+                if input.UserInputState == Enum.UserInputState.End then
+                    dragging = false
+                    c:Disconnect()
+                end
+            end)
+        end
+    end)
+
+    connect(UserInputService.InputChanged, function(input)
+        if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement
+            or input.UserInputType == Enum.UserInputType.Touch) then
+            local d = input.Position - dragStart
+            main.Position = UDim2.new(
+                startPos.X.Scale, startPos.X.Offset + d.X,
+                startPos.Y.Scale, startPos.Y.Offset + d.Y
+            )
+        end
+    end)
+end
+
+-- Auto-stop saat karakter bergerak
+connect(RunService.Heartbeat, function()
+    if not (currentTrack and state.autoStop) then return end
+    if os.clock() - startedAt < 0.4 then return end
+    local hum = getHumanoid()
+    if hum and hum.MoveDirection.Magnitude > 0.1 then
+        stopEmote()
+    end
+end)
+
+-- Reset saat respawn
+connect(player.CharacterAdded, function()
+    currentTrack = nil
+    refreshPlayButton()
+end)
+
+-- Animasi masuk
+main.Size = UDim2.new(0, 230, 0, 0)
+tween(main, 0.25, { Size = FULL_SIZE })
+
+  print("vassyl: loaded successfully.")
+  
